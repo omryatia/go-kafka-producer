@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,10 +16,14 @@ import (
 
 var (
 	kafkaProducer sarama.SyncProducer
+	producerOnce  sync.Once
+	producerErr   error
 	kafkaTopic    string
-	brokerAddr    string
-	producerMutex sync.Mutex
 )
+
+type MessageEvent struct {
+	Text string `json:"text"`
+}
 
 func getKafkaConfig() *sarama.Config {
 	config := sarama.NewConfig()
@@ -44,47 +49,68 @@ func getKafkaConfig() *sarama.Config {
 	return config
 }
 
-func createKafkaProducer(brokerList []string) (sarama.SyncProducer, error) {
-	config := getKafkaConfig()
+func InitKafkaProducer() (sarama.SyncProducer, error) {
+	producerOnce.Do(func() {
+		config := getKafkaConfig()
 
-	log.Printf("Attempting to connect to Kafka brokers: %v", brokerList)
-
-	// Try multiple times to connect
-	var producer sarama.SyncProducer
-	var err error
-
-	for i := 0; i < 3; i++ {
-		producer, err = sarama.NewSyncProducer(brokerList, config)
-		if err == nil {
-			return producer, nil
+		// Get Kafka brokers from environment
+		brokers := strings.Split(os.Getenv("KAFKA_BROKERS"), ",")
+		if len(brokers) == 0 || (len(brokers) == 1 && brokers[0] == "") {
+			producerErr = fmt.Errorf("KAFKA_BROKERS environment variable not set")
+			return
 		}
-		log.Printf("Failed to connect to Kafka (attempt %d/3): %v", i+1, err)
-		time.Sleep(time.Second * time.Duration(i+1))
-	}
 
-	return nil, fmt.Errorf("failed to connect to Kafka after 3 attempts: %v", err)
+		log.Printf("Attempting to connect to Kafka brokers: %v", brokers)
+
+		kafkaTopic := os.Getenv("KAFKA_TOPIC")
+		if kafkaTopic == "" {
+			producerErr = fmt.Errorf("KAFKA_TOPIC environment variable not set")
+			return
+		}
+
+		log.Printf("Using Kafka topic: %s", kafkaTopic)
+
+		// Create new sync producer
+		producer, err := sarama.NewSyncProducer(brokers, config)
+		if err != nil {
+			producerErr = fmt.Errorf("failed to create Kafka producer: %v", err)
+			return
+		}
+
+		kafkaProducer = producer
+		log.Printf("Kafka producer initialized successfully, brokers: %v", brokers)
+	})
+
+	return kafkaProducer, producerErr
 }
 
-func initKafka() error {
-	brokerAddr = os.Getenv("KAFKA_BROKER")
-	kafkaTopic = os.Getenv("KAFKA_TOPIC")
-
-	if brokerAddr == "" || kafkaTopic == "" {
-		return fmt.Errorf("KAFKA_BROKER and KAFKA_TOPIC must be set")
-	}
-
-	// Split broker string in case there are multiple brokers
-	brokers := strings.Split(brokerAddr, ",")
-	log.Printf("Initializing Kafka connection to brokers: %v, topic: %s", brokers, kafkaTopic)
-
-	producer, err := createKafkaProducer(brokers)
+func SendToKafka(topic string, event MessageEvent) (int32, int64, error) {
+	producer, err := InitKafkaProducer()
 	if err != nil {
-		return fmt.Errorf("failed to create producer: %v", err)
+		return 0, 0, fmt.Errorf("failed to initialize Kafka producer: %v", err)
 	}
 
-	kafkaProducer = producer
-	log.Printf("Successfully connected to Kafka")
-	return nil
+	// Convert event to JSON
+	jsonData, err := json.Marshal(event)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to marshal message event: %v", err)
+	}
+
+	// Create message
+	msg := &sarama.ProducerMessage{
+		Topic: topic,
+		Value: sarama.StringEncoder(jsonData),
+	}
+
+	// Send message
+	partition, offset, err := producer.SendMessage(msg)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to send message to Kafka: %v", err)
+	}
+
+	log.Printf("Message sent to Kafka, topic: %s, partition: %d, offset: %d", topic, partition, offset)
+
+	return partition, offset, nil
 }
 
 func publishHandler(c *gin.Context) {
@@ -100,33 +126,14 @@ func publishHandler(c *gin.Context) {
 		return
 	}
 
-	producerMutex.Lock()
-	defer producerMutex.Unlock()
-
-	message := &sarama.ProducerMessage{
-		Topic: kafkaTopic,
-		Value: sarama.StringEncoder(request.Message),
-	}
-
-	partition, offset, err := kafkaProducer.SendMessage(message)
+	event := MessageEvent{Text: request.Message}
+	partition, offset, err := SendToKafka(kafkaTopic, event)
 	if err != nil {
-		log.Printf("Error sending message to Kafka: %v", err)
-
-		// Try to reconnect once on failure
-		if strings.Contains(err.Error(), "connection refused") {
-			if producer, err := createKafkaProducer([]string{brokerAddr}); err == nil {
-				kafkaProducer = producer
-				partition, offset, err = kafkaProducer.SendMessage(message)
-			}
-		}
-
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"status": "error",
-				"error":  fmt.Sprintf("Failed to send message: %v", err),
-			})
-			return
-		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status": "error",
+			"error":  err.Error(),
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -138,13 +145,11 @@ func publishHandler(c *gin.Context) {
 }
 
 func healthCheck(c *gin.Context) {
-	producerMutex.Lock()
-	defer producerMutex.Unlock()
-
-	if kafkaProducer == nil {
+	producer, err := InitKafkaProducer()
+	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "error",
-			"error":  "Kafka producer not initialized",
+			"error":  fmt.Sprintf("Kafka producer not initialized: %v", err),
 		})
 		return
 	}
@@ -155,7 +160,7 @@ func healthCheck(c *gin.Context) {
 		Value: sarama.StringEncoder("health_check"),
 	}
 
-	_, _, err := kafkaProducer.SendMessage(message)
+	_, _, err = producer.SendMessage(message)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "error",
@@ -168,13 +173,20 @@ func healthCheck(c *gin.Context) {
 }
 
 func main() {
-	gin.SetMode(gin.ReleaseMode)
-
-	if err := initKafka(); err != nil {
-		log.Fatalf("Failed to initialize Kafka: %v", err)
+	// Initialize Kafka producer early to catch configuration errors
+	_, err := InitKafkaProducer()
+	if err != nil {
+		log.Fatalf("Failed to initialize Kafka producer: %v", err)
 	}
-	defer kafkaProducer.Close()
+	defer func() {
+		if kafkaProducer != nil {
+			if err := kafkaProducer.Close(); err != nil {
+				log.Printf("Error closing Kafka producer: %v", err)
+			}
+		}
+	}()
 
+	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
 
