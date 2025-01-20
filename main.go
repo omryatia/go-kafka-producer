@@ -65,6 +65,7 @@ func InitKafkaProducer() (sarama.SyncProducer, error) {
 
 		kafkaTopic := os.Getenv("KAFKA_TOPIC")
 		if kafkaTopic == "" {
+			log.Printf("KAFKA_TOPIC environment variable not set")
 			producerErr = fmt.Errorf("KAFKA_TOPIC environment variable not set")
 			return
 		}
