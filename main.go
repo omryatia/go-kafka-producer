@@ -19,7 +19,7 @@ var (
 	producerOnce  sync.Once
 	producerErr   error
 	kafkaTopic    string
-	kafkaBrokers  string
+	kafkaBrokers  []string
 )
 
 type MessageEvent struct {
@@ -55,14 +55,14 @@ func InitKafkaProducer() (sarama.SyncProducer, error) {
 		config := getKafkaConfig()
 
 		// Get Kafka brokers from environment
-		brokers := strings.Split(os.Getenv("KAFKA_BROKER"), ",")
-		if len(brokers) == 0 || (len(brokers) == 1 && brokers[0] == "") {
+		kafkaBrokers = strings.Split(os.Getenv("KAFKA_BROKER"), ",")
+		if len(kafkaBrokers) == 0 || (len(kafkaBrokers) == 1 && kafkaBrokers[0] == "") {
 			log.Printf("KAFKA_BROKER environment variable not set")
 			producerErr = fmt.Errorf("KAFKA_BROKER environment variable not set")
 			return
 		}
 
-		log.Printf("Attempting to connect to Kafka brokers: %v", brokers)
+		log.Printf("Attempting to connect to Kafka brokers: %v", kafkaBrokers)
 
 		kafkaTopic = os.Getenv("KAFKA_TOPIC")
 		if kafkaTopic == "" {
@@ -74,20 +74,23 @@ func InitKafkaProducer() (sarama.SyncProducer, error) {
 		log.Printf("Using Kafka topic: %s", kafkaTopic)
 
 		// Create new sync producer
-		producer, err := sarama.NewSyncProducer(brokers, config)
+		producer, err := sarama.NewSyncProducer(kafkaBrokers, config)
 		if err != nil {
 			producerErr = fmt.Errorf("failed to create Kafka producer: %v", err)
 			return
 		}
 
 		kafkaProducer = producer
-		log.Printf("Kafka producer initialized successfully, brokers: %v", brokers)
+		log.Printf("Kafka producer initialized successfully, brokers: %v", kafkaBrokers)
 	})
 
 	return kafkaProducer, producerErr
 }
 
 func SendToKafka(event MessageEvent) (int32, int64, error) {
+	log.Printf("Sending message using brokers: %v, topic: %s", kafkaBrokers, kafkaTopic)
+
+	// Initialize Kafka producer
 	producer, err := InitKafkaProducer()
 	if err != nil {
 		log.Printf("Error details - Failed to initialize Kafka producer: %v", err)
