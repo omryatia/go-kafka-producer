@@ -39,8 +39,10 @@ func main() {
 	initKafka()
 	defer kafkaProducer.Close()
 
+	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	router.POST("/publish", func(c *gin.Context) {
+		log.Printf("Received message: %s", c.Request.Body)
 		var request struct {
 			Message string `json:"message" binding:"required"`
 		}
