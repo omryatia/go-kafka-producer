@@ -92,7 +92,7 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 
 	initKafka()
-	defer kafkaProducer.Close()
+	//defer kafkaProducer.Close()
 
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
