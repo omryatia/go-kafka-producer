@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/gin-gonic/gin"
@@ -12,54 +15,69 @@ import (
 var (
 	kafkaProducer sarama.SyncProducer
 	kafkaTopic    string
+	brokerAddr    string
+	producerMutex sync.Mutex
 )
 
-func initKafka() {
-	broker := os.Getenv("KAFKA_BROKER")
-	kafkaTopic = os.Getenv("KAFKA_TOPIC")
-
-	log.Printf("Attempting to connect to Kafka broker: %s", broker) // Added logging
-
-	if broker == "" || kafkaTopic == "" {
-		log.Fatal("KAFKA_BROKER and KAFKA_TOPIC must be set in the environment variables")
-	}
-
+func getKafkaConfig() *sarama.Config {
 	config := sarama.NewConfig()
 	config.Producer.RequiredAcks = sarama.WaitForAll
 	config.Producer.Retry.Max = 5
 	config.Producer.Return.Successes = true
+	config.Producer.Retry.Backoff = 100 * time.Millisecond
+	config.Net.DialTimeout = 10 * time.Second
+	config.Net.ReadTimeout = 10 * time.Second
+	config.Net.WriteTimeout = 10 * time.Second
 
-	// Add debug logging
-	log.Printf("Connecting to Kafka with broker: %s, topic: %s", broker, kafkaTopic)
+	return config
+}
 
-	producer, err := sarama.NewSyncProducer([]string{broker}, config)
-	if err != nil {
-		log.Fatalf("Failed to start Sarama producer: %v, broker: %s", err, broker)
+func ensureKafkaConnection() error {
+	producerMutex.Lock()
+	defer producerMutex.Unlock()
+
+	if kafkaProducer != nil {
+		// Test the connection
+		_, _, err := kafkaProducer.SendMessage(&sarama.ProducerMessage{
+			Topic: kafkaTopic,
+			Value: sarama.StringEncoder("ping"),
+		})
+		if err == nil {
+			return nil
+		}
+		log.Printf("Kafka connection test failed: %v", err)
+		kafkaProducer.Close()
 	}
 
-	log.Printf("Successfully connected to Kafka broker: %s", broker)
+	// Reconnect
+	producer, err := sarama.NewSyncProducer([]string{brokerAddr}, getKafkaConfig())
+	if err != nil {
+		return err
+	}
+
 	kafkaProducer = producer
+	log.Printf("Successfully connected to Kafka broker: %s", brokerAddr)
+	return nil
+}
+
+func initKafka() error {
+	brokerAddr = os.Getenv("KAFKA_BROKER")
+	kafkaTopic = os.Getenv("KAFKA_TOPIC")
+
+	if brokerAddr == "" || kafkaTopic == "" {
+		return fmt.Errorf("KAFKA_BROKER and KAFKA_TOPIC must be set")
+	}
+
+	log.Printf("Initializing Kafka connection to broker: %s, topic: %s", brokerAddr, kafkaTopic)
+	return ensureKafkaConnection()
 }
 
 func publishHandler(c *gin.Context) {
-	// Log request details
-	log.Printf("Received request: %s %s", c.Request.Method, c.Request.URL.Path)
-
-	// Check method
-	if c.Request.Method != "POST" {
-		c.JSON(http.StatusMethodNotAllowed, gin.H{
-			"error":  "Method not allowed. Use POST",
-			"method": c.Request.Method,
-		})
-		return
-	}
-
 	var request struct {
 		Message string `json:"message" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
-		log.Printf("Error binding JSON: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "Invalid request format",
 			"details": err.Error(),
@@ -67,14 +85,24 @@ func publishHandler(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Attempting to send message to Kafka, length: %d", len(request.Message))
+	// Ensure Kafka connection is active
+	if err := ensureKafkaConnection(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status": "error",
+			"error":  "Failed to connect to Kafka: " + err.Error(),
+		})
+		return
+	}
 
 	message := &sarama.ProducerMessage{
 		Topic: kafkaTopic,
 		Value: sarama.StringEncoder(request.Message),
 	}
 
+	producerMutex.Lock()
 	partition, offset, err := kafkaProducer.SendMessage(message)
+	producerMutex.Unlock()
+
 	if err != nil {
 		log.Printf("Error sending message to Kafka: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -84,7 +112,6 @@ func publishHandler(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Message sent successfully: partition=%d, offset=%d", partition, offset)
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "success",
 		"partition": partition,
@@ -94,38 +121,26 @@ func publishHandler(c *gin.Context) {
 }
 
 func main() {
-	// Set Gin mode
 	gin.SetMode(gin.ReleaseMode)
 
-	initKafka()
-	//defer kafkaProducer.Close()
+	if err := initKafka(); err != nil {
+		log.Fatalf("Failed to initialize Kafka: %v", err)
+	}
 
 	router := gin.New()
-	router.Use(gin.Logger(), gin.Recovery())
+	router.Use(gin.Recovery())
 
-	// Add OPTIONS handler for CORS
-	router.OPTIONS("/publish", func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "POST, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type")
-		c.Status(http.StatusOK)
-	})
-
-	// Main publish endpoint
 	router.POST("/publish", publishHandler)
-
-	// Add a health check endpoint
 	router.GET("/health", func(c *gin.Context) {
+		err := ensureKafkaConnection()
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status": "error",
+				"error":  "Kafka connection failed: " + err.Error(),
+			})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-
-	// Add a catch-all handler for 404s
-	router.NoRoute(func(c *gin.Context) {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error":  "Route not found",
-			"path":   c.Request.URL.Path,
-			"method": c.Request.Method,
-		})
 	})
 
 	port := os.Getenv("API_PORT")
@@ -133,7 +148,7 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("Starting server on port %s...", port)
+	log.Printf("Starting server on port %s", port)
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
