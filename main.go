@@ -99,7 +99,7 @@ func SendToKafka(event MessageEvent) (int32, int64, error) {
 		return 0, 0, fmt.Errorf("failed to marshal message event: %v", err)
 	}
 
-	log.Printf("Preparing to send message to Kafka. Topic: %s, Message: %s", topic, string(jsonData))
+	log.Printf("Preparing to send message to Kafka. Topic: %s, Message: %s", kafkaTopic, string(jsonData))
 
 	// Create message
 	msg := &sarama.ProducerMessage{
@@ -114,7 +114,7 @@ func SendToKafka(event MessageEvent) (int32, int64, error) {
 		return 0, 0, fmt.Errorf("failed to send message to Kafka: %v", err)
 	}
 
-	log.Printf("Message sent to Kafka, topic: %s, partition: %d, offset: %d", topic, partition, offset)
+	log.Printf("Message sent to Kafka, topic: %s, partition: %d, offset: %d", kafkaTopic, partition, offset)
 
 	return partition, offset, nil
 }
