@@ -57,13 +57,14 @@ func InitKafkaProducer() (sarama.SyncProducer, error) {
 		// Get Kafka brokers from environment
 		brokers := strings.Split(os.Getenv("KAFKA_BROKER"), ",")
 		if len(brokers) == 0 || (len(brokers) == 1 && brokers[0] == "") {
+			log.Printf("KAFKA_BROKER environment variable not set")
 			producerErr = fmt.Errorf("KAFKA_BROKER environment variable not set")
 			return
 		}
 
 		log.Printf("Attempting to connect to Kafka brokers: %v", brokers)
 
-		kafkaTopic := os.Getenv("KAFKA_TOPIC")
+		kafkaTopic = os.Getenv("KAFKA_TOPIC")
 		if kafkaTopic == "" {
 			log.Printf("KAFKA_TOPIC environment variable not set")
 			producerErr = fmt.Errorf("KAFKA_TOPIC environment variable not set")
