@@ -87,14 +87,18 @@ func InitKafkaProducer() (sarama.SyncProducer, error) {
 func SendToKafka(topic string, event MessageEvent) (int32, int64, error) {
 	producer, err := InitKafkaProducer()
 	if err != nil {
+		log.Printf("Error details - Failed to initialize Kafka producer: %v", err)
 		return 0, 0, fmt.Errorf("failed to initialize Kafka producer: %v", err)
 	}
 
 	// Convert event to JSON
 	jsonData, err := json.Marshal(event)
 	if err != nil {
+		log.Printf("Error details - Failed to marshal message event: %v", err)
 		return 0, 0, fmt.Errorf("failed to marshal message event: %v", err)
 	}
+
+	log.Printf("Preparing to send message to Kafka. Topic: %s, Message: %s", topic, string(jsonData))
 
 	// Create message
 	msg := &sarama.ProducerMessage{
@@ -105,6 +109,7 @@ func SendToKafka(topic string, event MessageEvent) (int32, int64, error) {
 	// Send message
 	partition, offset, err := producer.SendMessage(msg)
 	if err != nil {
+		log.Printf("Error details - Failed to send message to Kafka: %v", err)
 		return 0, 0, fmt.Errorf("failed to send message to Kafka: %v", err)
 	}
 
@@ -126,12 +131,27 @@ func publishHandler(c *gin.Context) {
 		return
 	}
 
+	log.Printf("Publishing message - Topic: %s", kafkaTopic)
+
 	event := MessageEvent{Text: request.Message}
 	partition, offset, err := SendToKafka(kafkaTopic, event)
 	if err != nil {
+		log.Printf("Failed to send message: %v", err)
+
+		if strings.Contains(err.Error(), "invalid topic") {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"error":   "Topic error",
+				"topic":   kafkaTopic,
+				"details": err.Error(),
+			})
+			return
+		}
+
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status": "error",
 			"error":  err.Error(),
+			"topic":  kafkaTopic,
 		})
 		return
 	}
