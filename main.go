@@ -18,6 +18,8 @@ func initKafka() {
 	broker := os.Getenv("KAFKA_BROKER")
 	kafkaTopic = os.Getenv("KAFKA_TOPIC")
 
+	log.Printf("Attempting to connect to Kafka broker: %s", broker) // Added logging
+
 	if broker == "" || kafkaTopic == "" {
 		log.Fatal("KAFKA_BROKER and KAFKA_TOPIC must be set in the environment variables")
 	}
@@ -27,11 +29,15 @@ func initKafka() {
 	config.Producer.Retry.Max = 5
 	config.Producer.Return.Successes = true
 
+	// Add debug logging
+	log.Printf("Connecting to Kafka with broker: %s, topic: %s", broker, kafkaTopic)
+
 	producer, err := sarama.NewSyncProducer([]string{broker}, config)
 	if err != nil {
-		log.Fatalf("Failed to start Sarama producer: %v", err)
+		log.Fatalf("Failed to start Sarama producer: %v, broker: %s", err, broker)
 	}
 
+	log.Printf("Successfully connected to Kafka broker: %s", broker)
 	kafkaProducer = producer
 }
 
