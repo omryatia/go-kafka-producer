@@ -32,12 +32,15 @@ func getKafkaConfig() *sarama.Config {
 	config.Producer.Retry.Max = 5
 	config.Producer.Return.Successes = true
 	config.Producer.Retry.Backoff = 100 * time.Millisecond
+	config.Producer.Partitioner = sarama.NewRandomPartitioner
 
 	// Network configurations
 	config.Net.DialTimeout = 10 * time.Second
 	config.Net.ReadTimeout = 10 * time.Second
 	config.Net.WriteTimeout = 10 * time.Second
 	config.Net.MaxOpenRequests = 5
+	config.Net.SASL.Enable = false
+	config.Net.TLS.Enable = false
 
 	// Metadata configurations
 	config.Metadata.Retry.Max = 5
@@ -46,6 +49,9 @@ func getKafkaConfig() *sarama.Config {
 
 	// Explicitly set the broker address
 	config.Metadata.Full = true
+
+	// Set explicit version
+	config.Version = sarama.V2_8_0_0
 
 	return config
 }
