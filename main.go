@@ -19,6 +19,7 @@ var (
 	producerOnce  sync.Once
 	producerErr   error
 	kafkaTopic    string
+	kafkaBrokers  string
 )
 
 type MessageEvent struct {
@@ -84,7 +85,7 @@ func InitKafkaProducer() (sarama.SyncProducer, error) {
 	return kafkaProducer, producerErr
 }
 
-func SendToKafka(topic string, event MessageEvent) (int32, int64, error) {
+func SendToKafka(event MessageEvent) (int32, int64, error) {
 	producer, err := InitKafkaProducer()
 	if err != nil {
 		log.Printf("Error details - Failed to initialize Kafka producer: %v", err)
@@ -102,7 +103,7 @@ func SendToKafka(topic string, event MessageEvent) (int32, int64, error) {
 
 	// Create message
 	msg := &sarama.ProducerMessage{
-		Topic: topic,
+		Topic: kafkaTopic,
 		Value: sarama.StringEncoder(jsonData),
 	}
 
@@ -131,10 +132,8 @@ func publishHandler(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Publishing message - Topic: %s", kafkaTopic)
-
 	event := MessageEvent{Text: request.Message}
-	partition, offset, err := SendToKafka(kafkaTopic, event)
+	partition, offset, err := SendToKafka(event)
 	if err != nil {
 		log.Printf("Failed to send message: %v", err)
 
