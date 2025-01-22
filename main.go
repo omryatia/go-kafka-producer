@@ -87,6 +87,21 @@ func InitKafkaProducer() (sarama.SyncProducer, error) {
 		}
 
 		kafkaProducer = producer
+
+		// Create message
+		msg := &sarama.ProducerMessage{
+			Topic:     kafkaTopic,
+			Partition: -1,
+			Value:     sarama.StringEncoder("testing 123"),
+		}
+
+		// Send message
+		partition, offset, err := producer.SendMessage(msg)
+		if err != nil {
+			log.Printf("Error details - Failed to send message to Kafka: %v", err)
+		}
+		log.Printf("Message sent to Kafka, topic: %s, partition: %d, offset: %d", kafkaTopic, partition, offset)
+
 		log.Printf("Kafka producer initialized successfully, brokers: %v", kafkaBrokers)
 	})
 
