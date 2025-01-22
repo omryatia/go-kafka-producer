@@ -114,8 +114,9 @@ func SendToKafka(event MessageEvent) (int32, int64, error) {
 
 	// Create message
 	msg := &sarama.ProducerMessage{
-		Topic: kafkaTopic,
-		Value: sarama.StringEncoder(jsonData),
+		Topic:     kafkaTopic,
+		Partition: -1,
+		Value:     sarama.StringEncoder(jsonData),
 	}
 
 	// Send message
